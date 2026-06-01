@@ -1,0 +1,11 @@
+{
+  "appHomePath": "",
+  "sdOnnxModelUrl": "https://example.com/path/to/stable-diffusion-onnx-model.zip",
+  "onnxRuntimeUrl": "https://example.com/path/to/onnxruntime-win-x64.zip",
+  "selectedModelPath": "",
+  "outputPath": "",
+  "launcher": {
+    "openMenuOnInstall": true,
+    "defaultAction": "Launcher"
+  }
+}
