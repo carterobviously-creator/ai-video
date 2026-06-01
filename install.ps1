@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('Install','Launcher','AI Video Studio','Local Agent','Open Models','Open Outputs','PowerShell','CMD','WSL','Configure SD ONNX')]
+    [ValidateSet('Install','Launcher','AI Video Studio','Local Agent','Open Models','Open Outputs','PowerShell','CMD','WSL','Generate')]
     [string]$Action = 'Install'
 )
 
@@ -10,6 +10,7 @@ $ErrorActionPreference = 'Stop'
 $script:ScriptRoot = Split-Path -Parent $PSCommandPath
 $script:DefaultConfigPath = Join-Path $script:ScriptRoot 'config/default-config.json'
 $script:AppsConfigPath = Join-Path $script:ScriptRoot 'config/apps.json'
+$script:GenerateScript = Join-Path $script:ScriptRoot 'generate.py'
 $script:LogFile = $null
 
 function Write-Log {
@@ -81,15 +82,40 @@ function Initialize-Config {
     }
 
     $config = Read-JsonFile -Path $ConfigPath
+    
+    # Ensure new config fields exist (upgrade path)
+    $defaultConfig = Read-JsonFile -Path $script:DefaultConfigPath
+    $needsSave = $false
+    
+    if (-not (Get-Member -InputObject $config -Name 'sdOnnxModelId' -MemberType NoteProperty)) {
+        $config | Add-Member -NotePropertyName 'sdOnnxModelId' -NotePropertyValue $defaultConfig.sdOnnxModelId
+        $needsSave = $true
+    }
+    if (-not (Get-Member -InputObject $config -Name 'sdOnnxModelRevision' -MemberType NoteProperty)) {
+        $config | Add-Member -NotePropertyName 'sdOnnxModelRevision' -NotePropertyValue $defaultConfig.sdOnnxModelRevision
+        $needsSave = $true
+    }
+    if (-not (Get-Member -InputObject $config -Name 'pythonPackages' -MemberType NoteProperty)) {
+        $config | Add-Member -NotePropertyName 'pythonPackages' -NotePropertyValue $defaultConfig.pythonPackages
+        $needsSave = $true
+    }
+    if (-not (Get-Member -InputObject $config -Name 'generation' -MemberType NoteProperty)) {
+        $config | Add-Member -NotePropertyName 'generation' -NotePropertyValue $defaultConfig.generation
+        $needsSave = $true
+    }
 
     if ([string]::IsNullOrWhiteSpace([string]$config.appHomePath)) {
         $config.appHomePath = $AppHome
+        $needsSave = $true
     }
     if ([string]::IsNullOrWhiteSpace([string]$config.outputPath)) {
         $config.outputPath = Join-Path $AppHome 'outputs'
+        $needsSave = $true
     }
 
-    Save-JsonFile -Object $config -Path $ConfigPath
+    if ($needsSave) {
+        Save-JsonFile -Object $config -Path $ConfigPath
+    }
     return $config
 }
 
@@ -110,55 +136,100 @@ function Ensure-AppsConfigCopy {
     }
 
     $targetPath = Join-Path $AppHome 'apps.json'
-    if (-not (Test-Path -LiteralPath $targetPath)) {
-        Copy-Item -LiteralPath $script:AppsConfigPath -Destination $targetPath -Force
-        Write-Log "Created app metadata at $targetPath"
-    }
+    # Always update apps.json from source to keep it current
+    Copy-Item -LiteralPath $script:AppsConfigPath -Destination $targetPath -Force
 }
 
-function Is-PlaceholderUrl {
-    param([AllowNull()][string]$Url)
-
-    if ([string]::IsNullOrWhiteSpace($Url)) { return $true }
-    return ($Url -match 'example.com|placeholder|your-url-here|TODO')
+function Find-Python {
+    # Try python, then python3, then py launcher
+    $candidates = @('python', 'python3', 'py')
+    foreach ($cmd in $candidates) {
+        $found = Get-Command $cmd -ErrorAction SilentlyContinue
+        if ($found) {
+            # Verify it's Python 3
+            try {
+                $version = & $cmd --version 2>&1
+                if ($version -match 'Python 3') {
+                    return $cmd
+                }
+            } catch {}
+        }
+    }
+    return $null
 }
 
-function Download-AssetIfConfigured {
-    param(
-        [Parameter(Mandatory = $true)][string]$Url,
-        [Parameter(Mandatory = $true)][string]$Destination,
-        [Parameter(Mandatory = $true)][string]$Label
-    )
+function Install-PythonDependencies {
+    param([Parameter(Mandatory = $true)]$Config)
 
-    if (Test-Path -LiteralPath $Destination) {
-        Write-Log "$Label already exists: $Destination"
-        return $true
-    }
-
-    if (Is-PlaceholderUrl -Url $Url) {
-        Write-Log "$Label URL is a placeholder. Update config.json to enable auto-download." 'WARN'
+    $pythonCmd = Find-Python
+    if (-not $pythonCmd) {
+        Write-Log "Python 3 is not installed or not in PATH." 'ERROR'
+        Write-Log "Please install Python 3.10+ from https://www.python.org/downloads/" 'ERROR'
+        Write-Log "Make sure to check 'Add Python to PATH' during installation." 'ERROR'
         return $false
     }
 
-    Ensure-Directory -Path (Split-Path -Parent $Destination)
-    Write-Log "Downloading $Label from $Url"
-    Invoke-WebRequest -Uri $Url -OutFile $Destination -UseBasicParsing
-    Write-Log "Saved $Label to $Destination"
-    return $true
-}
+    Write-Log "Found Python: $pythonCmd"
 
-function Detect-OnnxModel {
-    param([Parameter(Mandatory = $true)][string]$ModelsRoot)
-
-    $model = Get-ChildItem -Path $ModelsRoot -Recurse -File -ErrorAction SilentlyContinue |
-        Where-Object { $_.Extension -ieq '.onnx' } |
-        Select-Object -First 1
-
-    if ($model) {
-        return $model.FullName
+    $packages = $Config.pythonPackages
+    if (-not $packages -or $packages.Count -eq 0) {
+        $packages = @('onnxruntime', 'diffusers', 'transformers', 'numpy', 'Pillow')
     }
 
-    return $null
+    Write-Log "Installing Python packages: $($packages -join ', ')"
+    $packageList = $packages -join ' '
+
+    try {
+        $proc = Start-Process -FilePath $pythonCmd -ArgumentList "-m pip install --upgrade pip" -Wait -PassThru -NoNewWindow
+        if ($proc.ExitCode -ne 0) {
+            Write-Log "pip upgrade failed (non-fatal), continuing..." 'WARN'
+        }
+        $proc = Start-Process -FilePath $pythonCmd -ArgumentList "-m pip install $packageList" -Wait -PassThru -NoNewWindow
+        if ($proc.ExitCode -ne 0) {
+            Write-Log "pip install failed with exit code $($proc.ExitCode)" 'ERROR'
+            return $false
+        }
+        Write-Log "Python dependencies installed successfully."
+        return $true
+    }
+    catch {
+        Write-Log "Failed to install Python packages: $($_.Exception.Message)" 'ERROR'
+        return $false
+    }
+}
+
+function Download-OnnxRuntime {
+    param(
+        [Parameter(Mandatory = $true)]$Config,
+        [Parameter(Mandatory = $true)][string]$AppHome
+    )
+
+    $url = [string]$Config.onnxRuntimeUrl
+    if ([string]::IsNullOrWhiteSpace($url)) {
+        Write-Log "No ONNX Runtime URL configured, skipping standalone runtime download." 'WARN'
+        return
+    }
+
+    $runtimeDir = Join-Path $AppHome 'runtime'
+    $archivePath = Join-Path $runtimeDir 'onnxruntime-win-x64.zip'
+    $extractedMarker = Join-Path $runtimeDir '.extracted'
+
+    if (Test-Path -LiteralPath $extractedMarker) {
+        Write-Log "ONNX Runtime already extracted."
+        return
+    }
+
+    if (-not (Test-Path -LiteralPath $archivePath)) {
+        Write-Log "Downloading ONNX Runtime from $url"
+        Ensure-Directory -Path $runtimeDir
+        Invoke-WebRequest -Uri $url -OutFile $archivePath -UseBasicParsing
+        Write-Log "Downloaded ONNX Runtime archive."
+    }
+
+    Write-Log "Extracting ONNX Runtime..."
+    Expand-Archive -Path $archivePath -DestinationPath $runtimeDir -Force
+    Set-Content -Path $extractedMarker -Value (Get-Date -Format 'o')
+    Write-Log "ONNX Runtime extracted to $runtimeDir"
 }
 
 function Open-Folder {
@@ -189,38 +260,30 @@ function Open-WSL {
     }
 }
 
-function Invoke-ConfiguredApp {
+function Invoke-Generate {
     param(
-        [Parameter(Mandatory = $true)][string]$AppId,
-        [Parameter(Mandatory = $true)][string]$AppHome
+        [Parameter(Mandatory = $true)][string]$Mode,
+        [string]$Prompt
     )
 
-    $appsPath = Join-Path $AppHome 'apps.json'
-    if (-not (Test-Path -LiteralPath $appsPath)) {
-        Write-Log "Missing apps metadata at $appsPath" 'WARN'
+    $pythonCmd = Find-Python
+    if (-not $pythonCmd) {
+        Write-Log "Python 3 not found. Run Install action first." 'ERROR'
         return
     }
 
-    $apps = Read-JsonFile -Path $appsPath
-    $app = $apps.apps | Where-Object { $_.id -eq $AppId } | Select-Object -First 1
-    if (-not $app) {
-        Write-Log "App entry '$AppId' was not found in $appsPath" 'WARN'
+    if (-not (Test-Path -LiteralPath $script:GenerateScript)) {
+        Write-Log "generate.py not found at $script:GenerateScript" 'ERROR'
         return
     }
 
-    if ([string]::IsNullOrWhiteSpace([string]$app.executable)) {
-        Write-Log "No executable configured for '$($app.name)'. Update $appsPath first." 'WARN'
-        return
+    if ($Mode -eq 'interactive') {
+        $arguments = "`"$script:GenerateScript`" --interactive"
+    } else {
+        $arguments = "`"$script:GenerateScript`" --prompt `"$Prompt`""
     }
 
-    if (-not (Test-Path -LiteralPath $app.executable)) {
-        Write-Log "Configured executable was not found: $($app.executable)" 'WARN'
-        return
-    }
-
-    $args = if ($app.args) { [string]$app.args } else { '' }
-    Start-Process -FilePath $app.executable -ArgumentList $args -WorkingDirectory $AppHome
-    Write-Log "Launched '$($app.name)'"
+    Start-Process -FilePath $pythonCmd -ArgumentList $arguments -WorkingDirectory $script:ScriptRoot -NoNewWindow -Wait
 }
 
 function Ensure-StartMenuShortcuts {
@@ -239,7 +302,7 @@ function Ensure-StartMenuShortcuts {
         $actions = @(
             @{ Name = 'AI Video Launcher'; Action = 'Launcher' },
             @{ Name = 'AI Video Studio'; Action = 'AI Video Studio' },
-            @{ Name = 'Local Agent'; Action = 'Local Agent' },
+            @{ Name = 'Generate Image'; Action = 'Generate' },
             @{ Name = 'Open Models Folder'; Action = 'Open Models' },
             @{ Name = 'Open Outputs Folder'; Action = 'Open Outputs' }
         )
@@ -270,55 +333,29 @@ function Show-LauncherMenu {
     while ($true) {
         Write-Host ''
         Write-Host '=== AI Video Local Launcher ==='
-        Write-Host '1) AI Video Studio'
-        Write-Host '2) Local Agent'
-        Write-Host '3) Open model folder'
-        Write-Host '4) Open outputs folder'
+        Write-Host '1) Generate Image (interactive)'
+        Write-Host '2) Open outputs folder'
+        Write-Host '3) Open model cache folder'
+        Write-Host '4) Re-install Python dependencies'
         Write-Host '5) Open PowerShell'
         Write-Host '6) Open CMD'
         Write-Host '7) Open WSL'
-        Write-Host '8) Configure SD ONNX / runtime download'
-        Write-Host '9) Exit'
+        Write-Host '8) Exit'
 
-        $choice = Read-Host 'Choose an option (1-9)'
+        $choice = Read-Host 'Choose an option (1-8)'
 
         switch ($choice) {
-            '1' { Invoke-ConfiguredApp -AppId 'ai-video-studio' -AppHome $AppHome }
-            '2' { Invoke-ConfiguredApp -AppId 'local-agent' -AppHome $AppHome }
+            '1' { Invoke-Generate -Mode 'interactive' }
+            '2' { Open-Folder -Path ([string]$Config.outputPath) }
             '3' { Open-Folder -Path (Join-Path $AppHome 'models') }
-            '4' { Open-Folder -Path ([string]$Config.outputPath) }
+            '4' { Install-PythonDependencies -Config $Config }
             '5' { Open-PowerShell -WorkingDirectory $AppHome }
             '6' { Open-Cmd -WorkingDirectory $AppHome }
             '7' { Open-WSL }
-            '8' { Invoke-SdOnnxSetup -Config ([ref]$Config) -AppHome $AppHome }
-            '9' { return }
-            default { Write-Log 'Invalid selection. Choose 1-9.' 'WARN' }
+            '8' { return }
+            default { Write-Log 'Invalid selection. Choose 1-8.' 'WARN' }
         }
     }
-}
-
-function Invoke-SdOnnxSetup {
-    param(
-        [Parameter(Mandatory = $true)][ref]$Config,
-        [Parameter(Mandatory = $true)][string]$AppHome
-    )
-
-    $runtimeArchive = Join-Path $AppHome 'runtime\onnxruntime-win-x64.zip'
-    $modelArchive = Join-Path $AppHome 'models\sd-onnx\sd-model.zip'
-
-    [void](Download-AssetIfConfigured -Url ([string]$Config.Value.onnxRuntimeUrl) -Destination $runtimeArchive -Label 'ONNX Runtime bundle')
-    [void](Download-AssetIfConfigured -Url ([string]$Config.Value.sdOnnxModelUrl) -Destination $modelArchive -Label 'Stable Diffusion ONNX model package')
-
-    $detected = Detect-OnnxModel -ModelsRoot (Join-Path $AppHome 'models')
-    if ($detected) {
-        $Config.Value.selectedModelPath = $detected
-        Write-Log "Detected ONNX model: $detected"
-    }
-    else {
-        Write-Log 'No .onnx file detected yet. Add/extract an SD ONNX model under the models folder.' 'WARN'
-    }
-
-    Save-JsonFile -Object $Config.Value -Path (Get-ConfigPath -AppHome $AppHome)
 }
 
 function Invoke-Action {
@@ -330,20 +367,30 @@ function Invoke-Action {
 
     switch ($ChosenAction) {
         'Install' {
-            Invoke-SdOnnxSetup -Config ([ref]$Config) -AppHome $AppHome
+            Write-Log "Setting up AI Video Studio..."
+            $pyOk = Install-PythonDependencies -Config $Config
+            if ($pyOk) {
+                Download-OnnxRuntime -Config $Config -AppHome $AppHome
+                Write-Log ""
+                Write-Log "============================================"
+                Write-Log " Setup complete! You're ready to generate."
+                Write-Log " The first generation will download the SD 1.5"
+                Write-Log " ONNX model (~5 GB) automatically."
+                Write-Log "============================================"
+            }
             if ($Config.launcher -and $Config.launcher.openMenuOnInstall) {
                 Show-LauncherMenu -Config $Config -AppHome $AppHome
             }
         }
         'Launcher' { Show-LauncherMenu -Config $Config -AppHome $AppHome }
-        'AI Video Studio' { Invoke-ConfiguredApp -AppId 'ai-video-studio' -AppHome $AppHome }
-        'Local Agent' { Invoke-ConfiguredApp -AppId 'local-agent' -AppHome $AppHome }
+        'AI Video Studio' { Invoke-Generate -Mode 'interactive' }
+        'Local Agent' { Invoke-Generate -Mode 'interactive' }
+        'Generate' { Invoke-Generate -Mode 'interactive' }
         'Open Models' { Open-Folder -Path (Join-Path $AppHome 'models') }
         'Open Outputs' { Open-Folder -Path ([string]$Config.outputPath) }
         'PowerShell' { Open-PowerShell -WorkingDirectory $AppHome }
         'CMD' { Open-Cmd -WorkingDirectory $AppHome }
         'WSL' { Open-WSL }
-        'Configure SD ONNX' { Invoke-SdOnnxSetup -Config ([ref]$Config) -AppHome $AppHome }
     }
 }
 
@@ -359,7 +406,5 @@ Ensure-StartMenuShortcuts -ScriptPath $PSCommandPath
 
 Write-Log "App home: $appHome"
 Write-Log "Config path: $configPath"
-Write-Log 'This repository provides a Windows-first installer/launcher scaffold only.'
-Write-Log 'Stable Diffusion ONNX and ONNX Runtime downloads depend on URLs configured in config.json.'
 
 Invoke-Action -ChosenAction $Action -Config $config -AppHome $appHome

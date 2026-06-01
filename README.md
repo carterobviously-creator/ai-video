@@ -1,67 +1,72 @@
-# AI Video (Windows-first local bootstrap shell)
+# AI Video - Local Image Generation (Windows)
 
-This repository is a **Windows-first, local-only bootstrap shell** for building a one-click AI image/video workflow around **Stable Diffusion ONNX**.
+One-click local image generation using **Stable Diffusion 1.5 ONNX** on Windows. Works on CPU (no CUDA required).
 
-## What this repo does today
+## Quick Start
 
-- Provides a root one-click entry point: `install.cmd`
-- Runs a PowerShell bootstrap/launcher: `install.ps1`
-- Creates local folders under `%LOCALAPPDATA%\\AI-Video`:
-  - `models`
-  - `runtime`
-  - `outputs`
-  - `agent-data`
-  - `shortcuts`
-  - `logs`
-- Creates and persists `config.json` and `apps.json`
-- Creates Start Menu shortcuts when possible
-- Provides a local PowerShell menu launcher for:
-  - AI Video Studio
-  - Local Agent
-  - open model folder
-  - open outputs folder
-  - open PowerShell
-  - open CMD
-  - open WSL (if installed)
+1. **Install Python 3.10+** from https://www.python.org/downloads/ (check "Add Python to PATH")
+2. **Double-click `install.cmd`**
 
-## Important constraints
+That's it. The installer will:
+- Install Python dependencies (onnxruntime, diffusers, transformers, etc.)
+- Download ONNX Runtime
+- Set up local folders and Start Menu shortcuts
+- Open the launcher menu
 
-- No Python is used in this repository.
-- No Rust/Node application stack is used in this iteration.
-- This is an installer/launcher/config scaffold, not a full inference engine implementation.
+The **first time you generate an image**, the SD 1.5 ONNX model (~5 GB) will be downloaded automatically from Hugging Face.
 
-## SD ONNX direction
+## Usage
 
-The target runtime direction is **Stable Diffusion ONNX + ONNX Runtime** for local Windows use (including older hardware direction such as GTX 1070-class systems).
+### From the launcher menu
+After install, choose option `1) Generate Image (interactive)` to start generating.
 
-`install.ps1` includes a download/configuration flow for:
-- SD ONNX model package URL (`sdOnnxModelUrl` in config)
-- ONNX Runtime bundle URL (`onnxRuntimeUrl` in config)
-
-If URLs are placeholders, the script clearly reports that and tells you to update config first.
-
-## What is placeholder vs real
-
-### Real now
-- Installer/bootstrap behavior
-- App home/folder setup
-- Config persistence
-- Start Menu shortcuts
-- PowerShell launcher menu
-- Local app launch hooks (from `apps.json`)
-
-### Placeholder for next integration step
-- Actual native inference executable integration
-- Final model/runtime package URLs
-- End-to-end frame/video generation pipeline execution
-
-## Run
-
-1. On Windows, double-click `install.cmd`.
-2. Or from PowerShell:
-
+### From command line
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\install.ps1
+# Interactive mode
+python generate.py --interactive
+
+# Single image
+python generate.py --prompt "a cat sitting on a rainbow"
+
+# Custom settings
+python generate.py --prompt "cyberpunk city" --steps 30 --width 512 --height 512
 ```
 
-After the first run, update `%LOCALAPPDATA%\\AI-Video\\config.json` with your SD ONNX model/runtime URLs and set `%LOCALAPPDATA%\\AI-Video\\apps.json` executable paths for your local runtime binaries.
+### Re-run the launcher anytime
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install.ps1 -Action Launcher
+```
+
+## What it does
+
+- **`install.cmd`** → one-click entry point (double-click this)
+- **`install.ps1`** → PowerShell installer/launcher with menu
+- **`generate.py`** → actual image generation using SD 1.5 ONNX
+- **`config/default-config.json`** → default settings (model, resolution, steps)
+- **`config/apps.json`** → app launcher metadata
+
+## Local folders (created in `%LOCALAPPDATA%\AI-Video`)
+
+| Folder | Purpose |
+|--------|---------|
+| `outputs` | Generated images saved here |
+| `models` | Model cache |
+| `runtime` | ONNX Runtime files |
+| `logs` | Install/runtime logs |
+
+## Configuration
+
+Edit `%LOCALAPPDATA%\AI-Video\config.json` to change:
+- `generation.defaultPrompt` — default prompt text
+- `generation.width` / `generation.height` — image dimensions (512x512 default)
+- `generation.numInferenceSteps` — quality vs speed (25 default)
+- `generation.guidanceScale` — how closely to follow the prompt (7.5 default)
+- `sdOnnxModelId` — Hugging Face model ID (default: `runwayml/stable-diffusion-v1-5`)
+
+## Requirements
+
+- Windows 10/11
+- Python 3.10+ (with pip)
+- ~6 GB disk space (for model + runtime)
+- No GPU required (runs on CPU via ONNX Runtime)
+

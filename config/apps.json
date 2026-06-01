@@ -3,18 +3,20 @@
     {
       "id": "ai-video-studio",
       "name": "AI Video Studio",
-      "description": "Windows-local launcher target for SD ONNX image/frame generation workflow.",
-      "executable": "",
-      "args": "",
-      "notes": "Set executable to your local Windows-native backend executable."
+      "description": "Interactive image generation using Stable Diffusion 1.5 ONNX on CPU.",
+      "executable": "python",
+      "args": "generate.py --interactive",
+      "workingDir": "{{scriptRoot}}",
+      "notes": "Launches the interactive SD ONNX image generator."
     },
     {
       "id": "local-agent",
       "name": "Local Agent",
-      "description": "Optional local helper process launcher.",
-      "executable": "",
-      "args": "",
-      "notes": "Set executable if you have a local helper app."
+      "description": "Headless image generation agent - pass prompts via command line.",
+      "executable": "python",
+      "args": "generate.py",
+      "workingDir": "{{scriptRoot}}",
+      "notes": "Run with --prompt 'your prompt' for single-shot generation."
     }
   ]
 }

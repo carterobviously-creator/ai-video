@@ -1,11 +1,26 @@
 {
   "appHomePath": "",
-  "sdOnnxModelUrl": "https://example.com/path/to/stable-diffusion-onnx-model.zip",
-  "onnxRuntimeUrl": "https://example.com/path/to/onnxruntime-win-x64.zip",
+  "sdOnnxModelId": "runwayml/stable-diffusion-v1-5",
+  "sdOnnxModelRevision": "onnx",
+  "onnxRuntimeUrl": "https://github.com/microsoft/onnxruntime/releases/download/v1.18.1/onnxruntime-win-x64-1.18.1.zip",
   "selectedModelPath": "",
   "outputPath": "",
+  "pythonPackages": [
+    "onnxruntime",
+    "diffusers",
+    "transformers",
+    "numpy",
+    "Pillow"
+  ],
   "launcher": {
     "openMenuOnInstall": true,
     "defaultAction": "Launcher"
+  },
+  "generation": {
+    "defaultPrompt": "a photo of an astronaut riding a horse on mars",
+    "width": 512,
+    "height": 512,
+    "numInferenceSteps": 25,
+    "guidanceScale": 7.5
   }
 }
